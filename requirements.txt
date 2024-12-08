@@ -1,0 +1,19 @@
+# Install all required libraries below (with pip install -r requirements.txt):
+pydantic
+langchain_ollama
+os
+shutil
+langchain_community
+langchain
+colorama
+fastapi
+
+# Go to https://ollama.com/download to download and install Ollama for your operating system (Run the following commands to verify the installation):
+# ollama --version
+
+# Download the required models using Ollama (Run the following commands to download the necessary models):
+# ollama pull nomic-embed-text
+# ollama pull mistral
+
+# Run the Ollama server (Once the models are downloaded, start the Ollama server by running):
+# ollama serve
