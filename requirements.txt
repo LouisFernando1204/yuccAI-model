@@ -17,3 +17,6 @@ fastapi
 
 # Run the Ollama server (Once the models are downloaded, start the Ollama server by running):
 # ollama serve
+
+# Start the FastAPI Server with uvicorn
+# uvicorn app.main:app --reload
