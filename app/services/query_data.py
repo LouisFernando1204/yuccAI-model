@@ -43,6 +43,14 @@ def query_data_service(query_text: str):
     response_text = model.invoke(prompt)
 
     sources = [doc.metadata.get("id", None) for doc, _score in results]
-    formatted_response = f"Response: {response_text}\nSources: {sources}"
-    print(Fore.YELLOW + "Model Response:" + Style.RESET_ALL, formatted_response)
-    return response_text
+    pdf_filename = None
+    
+    if sources:
+        first_source = sources[0]  
+        pdf_filename = os.path.basename(first_source.split(':')[0])  
+    
+    formatted_response = f"Response: {response_text}\nPDF File: {pdf_filename}\nSources: {sources}"
+    print(Fore.YELLOW + "Model Response:" + Style.RESET_ALL, response_text)
+    print(formatted_response)
+    
+    return {"answer": response_text, "source": pdf_filename}
