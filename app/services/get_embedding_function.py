@@ -5,4 +5,5 @@ def get_embedding_function():
     Initialize and return the embedding function.
     """
     embeddings = OllamaEmbeddings(model="nomic-embed-text")
+    print("EMBEDDING FUNCTION:", embeddings);
     return embeddings
