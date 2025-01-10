@@ -1,9 +1,9 @@
-from langchain_ollama import OllamaEmbeddings
+from langchain_openai import OpenAIEmbeddings
 
 def get_embedding_function():
     """
     Initialize and return the embedding function.
     """
-    embeddings = OllamaEmbeddings(model="nomic-embed-text")
+    embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
     print("EMBEDDING FUNCTION:", embeddings);
     return embeddings
