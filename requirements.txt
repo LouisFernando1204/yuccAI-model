@@ -1,13 +1,17 @@
 # Install all required libraries below (with pip install -r requirements.txt):
 pydantic
-langchain_ollama
-os
-shutil
-langchain_community
+pypdf
+pinecone
+langchain_pinecone
 langchain
+langchain_community
+langchain_openai
 colorama
 fastapi
-langchain_openai  
+uvicorn
+pinecone-client
+openai
+requests
 
 # Go to https://ollama.com/download to download and install Ollama for your operating system (Run the following commands to verify the installation):
 # ollama --version

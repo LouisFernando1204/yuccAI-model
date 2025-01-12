@@ -1,13 +1,22 @@
 import os
+import time
+import getpass
 from app.services.get_embedding_function import get_embedding_function
-from langchain_community.vectorstores import Chroma
+from pinecone import Pinecone, ServerlessSpec
 from langchain.prompts import ChatPromptTemplate
-from langchain_community.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage
 from colorama import Fore, Style
+from dotenv import load_dotenv
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CHROMA_PATH = os.path.join(BASE_DIR, "chroma")
+load_dotenv()
+
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
+
+has_introduced = False
+interaction_count = 0
 
 PROMPT_TEMPLATE_FIRST = """
 Halo! Saya Yucca, asisten digital Universitas Ciputra yang siap membantu Anda. Berikut adalah konteks yang relevan:
@@ -41,30 +50,61 @@ Jika pertanyaan di luar konteks yang diberikan, tolak dengan sopan dan ramah. Ka
 Ingat, saya adalah Yucca, asisten digital Universitas Ciputra.
 """
 
-has_introduced = False
-interaction_count = 0  
+def init_pinecone():
+    """
+    Initialize Pinecone and ensure the index exists.
+    """
+    pc = Pinecone(
+        api_key=PINECONE_API_KEY
+    )
+
+    index_name = PINECONE_INDEX_NAME
+
+    existing_indexes = [index_info["name"] for index_info in pc.list_indexes()]
+
+    if index_name not in existing_indexes:
+        pc.create_index(
+            name=PINECONE_INDEX_NAME,
+            dimension=1536,  
+            metric="cosine",  
+            spec=ServerlessSpec(
+                cloud="aws",  
+                region="us-east-1"  
+            )
+        )
+        while not pc.describe_index(index_name).status["ready"]:
+            time.sleep(1)
+    return pc, index_name
 
 def query_data_service(query_text: str):
     """
-    Query the database and get a response from the model.
+    Query the Pinecone database and get a response from the model.
     """
     global has_introduced, interaction_count
 
+    pc, index_name = init_pinecone()  
+    index = pc.Index(index_name)
+
     embedding_function = get_embedding_function()
-    db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embedding_function)
 
-    documents_in_db = db.get(include=["documents"]) 
-    print(Fore.YELLOW + "Documents in Database:" + Style.RESET_ALL, documents_in_db)
+    embedding = embedding_function.embed_query(query_text)
+    
+    results = index.query(
+        namespace="yuccai-knowledge",  
+        vector=embedding,  
+        top_k=5,  
+        include_values=False, 
+        include_metadata=True 
+    )
 
-    results = db.similarity_search_with_score(query_text, k=5)
     print(Fore.YELLOW + "Results:" + Style.RESET_ALL, results)
 
-    context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
+    context_text = "\n\n---\n\n".join([doc['metadata'].get('page_content', '') for doc in results['matches']])
     print(Fore.YELLOW + "Context Text:" + Style.RESET_ALL, context_text)
 
     if not has_introduced:
         prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_FIRST)
-        has_introduced = True  
+        has_introduced = True
     else:
         prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_FOLLOW_UP)
 
@@ -75,21 +115,24 @@ def query_data_service(query_text: str):
     response = model([HumanMessage(content=prompt)])
     response_text = response.content
 
-    sources = [doc.metadata.get("id", None) for doc, _score in results]
+    sources = [doc['metadata'].get("id", None) for doc in results['matches']]
+    print(Fore.YELLOW + "Sources:" + Style.RESET_ALL, sources)
+
+    selected_sources = [doc['metadata'].get("id") for doc in sorted(results['matches'], key=lambda x: x['score'], reverse=True)]
+
     pdf_filename = None
-    
-    if sources:
-        first_source = sources[0]  
-        pdf_filename = os.path.basename(first_source.split(':')[0])  
-    
-    formatted_response = f"Response: {response_text}\nPDF File: {pdf_filename}\nSources: {sources}"
+    if selected_sources:
+        first_source = selected_sources[0]
+        pdf_filename = os.path.basename(first_source.split(':')[0])
+
+    formatted_response = f"Response: {response_text}\nPDF File: {pdf_filename}\nSources: {selected_sources}"
     print(Fore.YELLOW + "Model Response:" + Style.RESET_ALL, response_text)
     print(formatted_response)
-    
+
     interaction_count += 1
 
     if interaction_count >= 10:
         has_introduced = False
-        interaction_count = 0 
+        interaction_count = 0
 
-    return {"answer": response_text, "source": pdf_filename}
+    return {"answer": response_text, "source": pdf_filename, "sources": selected_sources}

@@ -1,40 +1,70 @@
 import os
-import shutil
+import time
 from app.services.get_embedding_function import get_embedding_function
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.schema.document import Document
-from langchain_community.vectorstores import Chroma
+from pinecone import Pinecone, ServerlessSpec
+from langchain.schema import Document
 from colorama import Fore, Style
+from dotenv import load_dotenv
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CHROMA_PATH = os.path.join(BASE_DIR, "chroma")
-DATA_PATH = os.path.join(BASE_DIR, "..", "data")  
+load_dotenv()
+
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
+
+def init_pinecone():
+    """
+    Initialize Pinecone and ensure the index exists.
+    """
+    pc = Pinecone(
+        api_key=PINECONE_API_KEY
+    )
+
+    index_name = PINECONE_INDEX_NAME
+
+    existing_indexes = [index_info["name"] for index_info in pc.list_indexes()]
+
+    if index_name not in existing_indexes:
+        pc.create_index(
+            name=PINECONE_INDEX_NAME,
+            dimension=1536,  
+            metric="cosine",  
+            spec=ServerlessSpec(
+                cloud="aws",  
+                region="us-east-1"  
+            )
+        )
+        while not pc.describe_index(index_name).status["ready"]:
+            time.sleep(1)
+    return pc, index_name
 
 def populate_database_service(reset: bool = False):
     """
-    Populate the Chroma database with embeddings from PDFs.
+    Populate the Pinecone database with embeddings from PDFs.
     If `reset` is True, clear the database before repopulating it.
     """
+    pc, index_name = init_pinecone()  
+    index = pc.Index(index_name)
+    
     if reset:
-        clear_database()
-        db = Chroma(
-            persist_directory=CHROMA_PATH, embedding_function=get_embedding_function()
-        )
-        print(Fore.YELLOW + "After Clearing:" + Style.RESET_ALL, db.get())
+        clear_database(pc)  
+        print(Fore.YELLOW + "Database cleared!" + Style.RESET_ALL)
         return "Database reset successfully!"
 
     documents = load_documents()
     print(Fore.YELLOW + "Documents:" + Style.RESET_ALL, documents)
     chunks = split_documents(documents)
     print(Fore.YELLOW + "Chunks:" + Style.RESET_ALL, chunks)
-    add_to_chroma(chunks)
+    add_to_pinecone(chunks, index)
     return "Database populated successfully!"
 
 def load_documents():
     """
     Load PDF documents from the DATA_PATH directory.
     """
+    DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
     document_loader = PyPDFDirectoryLoader(DATA_PATH)
     return document_loader.load()
 
@@ -45,42 +75,43 @@ def split_documents(documents: list[Document]):
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=800,
         chunk_overlap=100,
-        length_function=len,
-        is_separator_regex=False,
+        length_function=len
     )
     return text_splitter.split_documents(documents)
 
-def add_to_chroma(chunks: list[Document]):
+def add_to_pinecone(chunks: list[Document], index):
     """
-    Add document chunks to the Chroma database, avoiding duplicates.
+    Add or update document chunks in the Pinecone database using upsert.
     """
-    db = Chroma(
-        persist_directory=CHROMA_PATH, embedding_function=get_embedding_function()
-    )
+    embedding_function = get_embedding_function()
+
     chunks_with_ids = calculate_chunk_ids(chunks)
     print(Fore.YELLOW + "Chunks With Ids:" + Style.RESET_ALL, chunks_with_ids)
 
-    existing_items = db.get(include=[]) 
-    print(Fore.YELLOW + "Existing Items:" + Style.RESET_ALL, existing_items)
-    existing_ids = set(existing_items["ids"])
-    print(Fore.YELLOW + "Existing Ids:" + Style.RESET_ALL, existing_ids)
-    print(f"Number of existing documents in DB: {len(existing_ids)}")
-
-    new_chunks = []
+    vectors = []
     for chunk in chunks_with_ids:
-        if chunk.metadata["id"] not in existing_ids:
-            new_chunks.append(chunk)
+        metadata = chunk.metadata.copy()
+        metadata["page_content"] = chunk.page_content 
 
-    if len(new_chunks):
-        print(f"👉 Adding new documents: {len(new_chunks)}")
-        new_chunk_ids = [chunk.metadata["id"] for chunk in new_chunks]
-        db.add_documents(new_chunks, ids=new_chunk_ids)
-        db.persist()
-        print(Fore.YELLOW + "Final DB Now:" + Style.RESET_ALL, db.get())
-        # print(Fore.YELLOW + "Embeddings:" + Style.RESET_ALL, db._collection.get(include=['embeddings']))
+        chunk_id = chunk.metadata["id"]
         
+        existing_vector = index.fetch(ids=[chunk_id], namespace="yuccai-knowledge")
+        if existing_vector.get("vectors"):
+            print(f"✅ ID {chunk_id} already exists, skip to another chunk.")
+            continue  
+
+        vector = {
+            "id": chunk_id,
+            "values": embedding_function.embed_query(chunk.page_content),
+            "metadata": metadata  
+        }
+        vectors.append(vector)
+
+    if vectors:
+        index.upsert(vectors=vectors, namespace="yuccai-knowledge")
+        print(Fore.YELLOW + "Documents upserted to Pinecone!" + Style.RESET_ALL)
     else:
-        print("✅ No new documents to add")
+        print("✅ No new documents to upsert")
 
 def calculate_chunk_ids(chunks):
     """
@@ -105,9 +136,8 @@ def calculate_chunk_ids(chunks):
 
     return chunks
 
-def clear_database():
+def clear_database(pc):
     """
-    Clear the Chroma database by deleting the CHROMA_PATH directory.
+    Clear the Pinecone database.
     """
-    if os.path.exists(CHROMA_PATH):
-        shutil.rmtree(CHROMA_PATH)
+    pc.delete_index(PINECONE_INDEX_NAME)
