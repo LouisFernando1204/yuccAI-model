@@ -1,6 +1,5 @@
 import os
 import time
-import getpass
 from app.services.get_embedding_function import get_embedding_function
 from pinecone import Pinecone, ServerlessSpec
 from langchain.prompts import ChatPromptTemplate
